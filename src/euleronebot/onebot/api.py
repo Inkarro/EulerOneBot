@@ -47,6 +47,7 @@ __all__ = [
     "GetVersionInfoResponse",
     "GroupReaction",
     "GroupReactionResponse",
+    "SetGroupReaction",
     "SendGroupMessage",
     "SendGroupMsgData",
     "SendLike",
@@ -302,6 +303,10 @@ class GetCSRFTokenResponse(BaseAPIResponse[GetCSRFTokenRsp]): ...
 
 class GroupReaction(BaseAPICall[GroupReactionData]):
     action: Literal["group_reaction"] = "group_reaction"
+
+
+class SetGroupReaction(BaseAPICall[GroupReactionData]):
+    action: Literal["set_group_reaction"] = "set_group_reaction"
 
 
 class GroupReactionResponse(BaseAPIResponse[EmptyRsp]): ...
