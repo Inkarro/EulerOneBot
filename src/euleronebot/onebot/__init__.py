@@ -127,6 +127,19 @@ class Adapter:
                 raw: dict = {}
                 with suppress(ValueError, TypeError):
                     raw = json.loads(data)
+                if (
+                    isinstance(e, ValidationError)
+                    and isinstance(raw, dict)
+                    and "params" not in raw
+                    and raw.get("action") in self.api_actions
+                ):
+                    try:
+                        api_call = self.api_validation.validate_json(json.dumps({**raw, "params": {}}))
+                    except (ValueError, TypeError) as retry_exc:
+                        e = retry_exc
+                    else:
+                        await self.api_calls.put(api_call)
+                        continue
                 if isinstance(e, ValidationError):
                     logger.warning(f"API 请求验证失败: {_summarize_validation_error(e, raw, self.api_actions)}")
                     logger.trace(traceback.format_exc())
