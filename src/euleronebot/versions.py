@@ -5,5 +5,5 @@ try:
 except PackageNotFoundError:
     __version__ = "unknown"
 
-NAME = "EulerOneBot"
+NAME = "Lagrange.OneBot"
 VERSION = __version__

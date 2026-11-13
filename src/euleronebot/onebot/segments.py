@@ -156,7 +156,7 @@ class MediaBaseData(BaseSegmentData):
 
 
 class ImageData(MediaBaseData):
-    summary: str
+    summary: str = ""
     is_emoji: bool = False
 
 
