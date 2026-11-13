@@ -148,7 +148,7 @@ class Adapter:
                     logger.error(traceback.format_exc())
                 retcode = 1404 if raw.get("action") not in self.api_actions else 1400
                 await self.report(
-                    ActionFailedResponse(status="failed", retcode=retcode, data=EmptyRsp(), echo=raw.get("echo", ""))
+                    ActionFailedResponse(status="failed", retcode=retcode, data=None, echo=raw.get("echo", ""))
                 )
                 continue
             await self.api_calls.put(api_call)

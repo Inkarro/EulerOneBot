@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 import os
@@ -107,12 +108,12 @@ class LagrangeImpl:
                     rsp = await with_retry(lambda c=call: handler(c.params))
                     rsp.echo = call.echo
                 else:
-                    rsp = ActionFailedResponse(status="failed", retcode=1404, data=EmptyRsp(), echo=call.echo)
+                    rsp = ActionFailedResponse(status="failed", retcode=1404, data=None, echo=call.echo)
                 await self.adapter.report(rsp)
             except Exception as e:  # noinspection PyBroadException
                 logger.error(repr(e))
                 logger.trace(traceback.format_exc())
-                rsp = ActionFailedResponse(status="failed", retcode=1400, data=EmptyRsp(), echo=call.echo)
+                rsp = ActionFailedResponse(status="failed", retcode=1400, data=None, echo=call.echo)
                 try:
                     await self.adapter.report(rsp)
                 except Exception:
@@ -475,7 +476,14 @@ class LagrangeImpl:
     @on(GetGroupMemberList)
     async def get_group_member_list(self, data: GetGroupMemberListData) -> GetGroupMemberListResponse:
         members = await self.lag.client.get_grp_members(grp_id=data.group_id)
-        result = []
+
+        async def fetch(uin: int) -> GetGroupMemberInfoRsp | None:
+            try:
+                return (await self.get_group_member_info(GetGroupMemberInfoData(group_id=data.group_id, user_id=uin))).data
+            except Exception:
+                return None
+
+        tasks = []
         for i in members.body:
             if not i.account.uin:
                 try:
@@ -484,9 +492,8 @@ class LagrangeImpl:
                     continue
             else:
                 uin = i.account.uin
-            result.append(
-                (await self.get_group_member_info(GetGroupMemberInfoData(group_id=data.group_id, user_id=uin))).data
-            )
+            tasks.append(fetch(uin))
+        result = [m for m in await asyncio.gather(*tasks) if m is not None]
         return GetGroupMemberListResponse(status="ok", retcode=0, data=GetGroupMemberListRsp.model_validate(result))
 
     @on(GroupReaction)
