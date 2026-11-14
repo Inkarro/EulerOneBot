@@ -200,6 +200,8 @@ class FriendPokeEvent(NoticeEvent):
 
 class ReactionEvent(NoticeEvent):
     notice_type: Literal["reaction", "group_msg_emoji_like"] = "reaction"
+    group_id: int
+    user_id: int
     message_id: int
     operator_id: int
     sub_type: Literal["add", "remove"]

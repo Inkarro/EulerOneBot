@@ -409,6 +409,8 @@ class LagrangeEventHandler:
             time=round(time.time()),
             self_id=self.lag.client.uin,
             notice_type=self.protocol.cfg.event_compatibility.reaction_event_type,
+            group_id=event.grp_id,
+            user_id=uin,
             message_id=msgid,
             operator_id=uin,
             sub_type="add" if event.is_increase else "remove",
