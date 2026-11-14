@@ -503,8 +503,21 @@ class LagrangeImpl:
     @on(GroupReaction)
     async def group_reaction(self, data: GroupReactionData) -> GroupReactionResponse:
         msg_info = await info_mgr.msgid_mgr.fetch(data.message_id or 0)
+        raw = data.emoji if data.emoji else (data.code or "")
+        # NapCat/NTQQ 语义: emoji_id 为 ≤3 位数字时是经典 face id(type=1);
+        # >3 位数字是 unicode emoji 的十进制码点(type=2),hiro-qq 的 type=2 分支
+        # 会取单字符的 ord() 作为码点,故此处传 chr(codepoint)
+        if raw.isdigit():
+            if len(raw) <= 3:
+                content: int | str = int(raw)  # face id
+            else:
+                content = chr(int(raw))  # unicode emoji 码点
+        elif len(raw) == 1:
+            content = raw  # 已是单字符 emoji,hiro-qq 自行 ord()
+        else:
+            content = raw[0]
         await self.lag.client.send_grp_reaction(
-            grp_id=data.group_id, msg_seq=msg_info.seq, content=data.emoji or data.code or 0, is_cancel=not data.is_add
+            grp_id=data.group_id, msg_seq=msg_info.seq, content=content, is_cancel=not data.is_add
         )
         return GroupReactionResponse(status="ok", retcode=0, data=EmptyRsp())
 

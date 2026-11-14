@@ -312,7 +312,7 @@ class GetCSRFTokenRsp(BaseModel):
 class GroupReactionData(BaseModel):
     group_id: int
     message_id: int
-    code: int | None = Field(default=None)  # qface
+    code: str | None = Field(default=None)  # qface id 或 unicode emoji
     emoji: str | None = Field(default=None)  # emoji
     is_add: bool = True
 
