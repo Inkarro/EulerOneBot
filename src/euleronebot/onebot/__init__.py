@@ -94,6 +94,8 @@ API_CALL_TYPES = (
     UploadPrivateFile,
     GetGroupFileUrl,
     GetPrivateFileUrl,
+    SendGroupForwardMessage,
+    SendPrivateForwardMessage,
 )
 
 

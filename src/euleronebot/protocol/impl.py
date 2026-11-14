@@ -74,15 +74,21 @@ class LagrangeImpl:
         self.subscriptions: dict[str, APICallHandler] = {}
 
     def subscribe(self) -> None:
+        action_aliases: dict[type, type] = {
+            # Overflow 以 Lagrange.OneBot 扩展名调用的合并转发,路由到同参数 handler
+            GroupReaction: SetGroupReaction,
+            SendGroupMessage: SendGroupForwardMessage,
+            SendPrivateMessage: SendPrivateForwardMessage,
+        }
         for i in dir(self):
             attr = getattr(self, i)
             func = getattr(attr, "__func__", attr)
             if isinstance(func, RegisteredHandler):
-                self.subscriptions[func.call_type.model_fields["action"].default] = attr
-                # SetGroupReaction 是 GroupReaction 的别名(Overflow 以 Lagrange.OneBot
-                # 扩展名调用),两个 action 路由到同一 handler
-                if func.call_type is GroupReaction:
-                    self.subscriptions[SetGroupReaction.model_fields["action"].default] = attr
+                call_type = func.call_type
+                self.subscriptions[call_type.model_fields["action"].default] = attr
+                alias = action_aliases.get(call_type)
+                if alias is not None:
+                    self.subscriptions[alias.model_fields["action"].default] = attr
 
     @staticmethod
     async def _open_upload_file(file: str, name: str | None = None) -> tuple[BinaryIO, str]:
