@@ -20,7 +20,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 from lagrange import Lagrange
-from lagrange.client.message.elems import MulitMsg
+from lagrange.client.message.elems import ForwardNode, MulitMsg
 from lagrange.client.message.types import Element
 
 from ..hyperogger import Logger
@@ -193,12 +193,62 @@ class LagrangeImpl:
         return SendMessageResponse(status="ok", retcode=0, data=SendMsgRsp(message_id=msgid))
 
     @on(SendPrivateForwardMessage)
-    async def send_private_forward_message(self, data: SendPrivateMsgData) -> SendMessageResponse:
-        return await self.send_private_message(data)
+    async def send_private_forward_message(self, data: SendPrivateForwardMsgData) -> SendMessageResponse:
+        nodes = await to_lagrange_msg(
+            msg=data.messages,
+            lgrc=self.lag.client,
+            target=TargetInfo(target="user", id=data.user_id),
+        )
+        if not nodes:
+            raise ValueError("no valid node in forward message")
+        forward = MulitMsg(messages=cast(list[ForwardNode], cast(object, nodes)))
+        uid = await info_mgr.uid_mgr.from_uin(data.user_id)
+        seq = await self.lag.client.send_friend_forward_msg(forward, uid)
+        msgid = await info_mgr.msgid_mgr.add(
+            MsgInfo(
+                raw_msg=[forward],
+                scene_type="user",
+                scene_id=data.user_id,
+                seq=seq,
+                timestamp=round(time.time()),
+                uid=self.lag.client.uid,
+                uin=self.lag.client.uin,
+                text="[聊天记录]",
+            )
+        )
+        return SendMessageResponse(status="ok", retcode=0, data=SendMsgRsp(message_id=msgid))
 
     @on(SendGroupForwardMessage)
-    async def send_group_forward_message(self, data: SendGroupMsgData) -> SendMessageResponse:
-        return await self.send_group_message(data)
+    async def send_group_forward_message(self, data: SendGroupForwardMsgData) -> SendMessageResponse:
+        nodes = await to_lagrange_msg(
+            msg=data.messages,
+            lgrc=self.lag.client,
+            target=TargetInfo(target="group", id=data.group_id),
+        )
+        if not nodes:
+            raise ValueError("no valid node in forward message")
+        forward = MulitMsg(messages=cast(list[ForwardNode], cast(object, nodes)))
+        seq = await self.lag.client.send_grp_forward_msg(forward, data.group_id)
+        try:
+            rand = (
+                await self.lag.client.get_grp_msg(grp_id=data.group_id, start=seq, end=seq, filter_deleted_msg=False)
+            )[0].rand
+        except (AttributeError, IndexError, KeyError):
+            rand = 0
+        msgid = await info_mgr.msgid_mgr.add(
+            MsgInfo(
+                raw_msg=[forward],
+                scene_type="group",
+                scene_id=data.group_id,
+                seq=seq,
+                timestamp=round(time.time()),
+                uid=self.lag.client.uid,
+                uin=self.lag.client.uin,
+                text="[聊天记录]",
+                rand=rand,
+            )
+        )
+        return SendMessageResponse(status="ok", retcode=0, data=SendMsgRsp(message_id=msgid))
 
     @on(DeleteMessage)
     async def delete_message(self, data: DeleteMsgData) -> DeleteMessageResponse:

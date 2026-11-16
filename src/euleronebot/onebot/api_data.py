@@ -52,11 +52,13 @@ __all__ = [
     "GetVersionInfoData",
     "GetVersionInfoRsp",
     "GroupReactionData",
+    "SendGroupForwardMsgData",
     "SendGroupMsgData",
     "SendLikeData",
     "SendMsgData",
     "SendMsgRsp",
     "SendPokeData",
+    "SendPrivateForwardMsgData",
     "SendPrivateMsgData",
     "SetFriendAddRequestData",
     "SetGroupAddRequestData",
@@ -81,6 +83,21 @@ class SendPrivateMsgData(BaseModel):
 class SendGroupMsgData(BaseModel):
     group_id: int
     message: list[SegmentUnion]
+
+
+class SendGroupForwardMsgData(BaseModel):
+    group_id: int
+    messages: list[SegmentUnion]
+    # gocq/Overflow 会附带的外显字段,仅作兼容接收,不透传协议层
+    source: str | None = None
+    summary: str | None = None
+    prompt: str | None = None
+    news: list[dict] | None = None
+
+
+class SendPrivateForwardMsgData(BaseModel):
+    user_id: int
+    messages: list[SegmentUnion]
 
 
 class SendMsgData(BaseModel):
