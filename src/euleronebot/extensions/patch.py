@@ -6,7 +6,7 @@ from typing import Any, Never
 from lagrange.client.base import BaseClient
 from lagrange.client.client import Client
 
-from euleronebot.config import loaded_config
+from euleronebot import config as _config
 from euleronebot.hyperogger import Logger
 
 _HEARTBEAT_TIMEOUT = 10
@@ -99,7 +99,9 @@ def patch_push_hex_dump() -> None:
     if _push_hex_dump_patched:
         return
 
-    cfg = loaded_config
+    # 动态读取模块属性:apply_patches() 在 setup() 之后才运行,
+    # 不能用 from-import(它绑定的是导入时的 None)
+    cfg = _config.loaded_config
     if cfg is None or cfg.log_level not in ("DEBUG", "TRACE"):
         return
 
