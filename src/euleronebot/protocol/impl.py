@@ -74,21 +74,11 @@ class LagrangeImpl:
         self.subscriptions: dict[str, APICallHandler] = {}
 
     def subscribe(self) -> None:
-        action_aliases: dict[type, type] = {
-            # Overflow 以 Lagrange.OneBot 扩展名调用的合并转发,路由到同参数 handler
-            GroupReaction: SetGroupReaction,
-            SendGroupMessage: SendGroupForwardMessage,
-            SendPrivateMessage: SendPrivateForwardMessage,
-        }
         for i in dir(self):
             attr = getattr(self, i)
             func = getattr(attr, "__func__", attr)
             if isinstance(func, RegisteredHandler):
-                call_type = func.call_type
-                self.subscriptions[call_type.model_fields["action"].default] = attr
-                alias = action_aliases.get(call_type)
-                if alias is not None:
-                    self.subscriptions[alias.model_fields["action"].default] = attr
+                self.subscriptions[func.call_type.model_fields["action"].default] = attr
 
     @staticmethod
     async def _open_upload_file(file: str, name: str | None = None) -> tuple[BinaryIO, str]:
@@ -201,6 +191,14 @@ class LagrangeImpl:
             )
         )
         return SendMessageResponse(status="ok", retcode=0, data=SendMsgRsp(message_id=msgid))
+
+    @on(SendPrivateForwardMessage)
+    async def send_private_forward_message(self, data: SendPrivateMsgData) -> SendMessageResponse:
+        return await self.send_private_message(data)
+
+    @on(SendGroupForwardMessage)
+    async def send_group_forward_message(self, data: SendGroupMsgData) -> SendMessageResponse:
+        return await self.send_group_message(data)
 
     @on(DeleteMessage)
     async def delete_message(self, data: DeleteMsgData) -> DeleteMessageResponse:
@@ -486,14 +484,7 @@ class LagrangeImpl:
     @on(GetGroupMemberList)
     async def get_group_member_list(self, data: GetGroupMemberListData) -> GetGroupMemberListResponse:
         members = await self.lag.client.get_grp_members(grp_id=data.group_id)
-
-        async def fetch(uin: int) -> GetGroupMemberInfoRsp | None:
-            try:
-                return (await self.get_group_member_info(GetGroupMemberInfoData(group_id=data.group_id, user_id=uin))).data
-            except Exception:
-                return None
-
-        tasks = []
+        tasks: list[asyncio.Task[GetGroupMemberInfoResponse]] = []
         for i in members.body:
             if not i.account.uin:
                 try:
@@ -502,12 +493,17 @@ class LagrangeImpl:
                     continue
             else:
                 uin = i.account.uin
-            tasks.append(fetch(uin))
-        result = [m for m in await asyncio.gather(*tasks) if m is not None]
-        return GetGroupMemberListResponse(status="ok", retcode=0, data=GetGroupMemberListRsp.model_validate(result))
+            tasks.append(
+                asyncio.create_task(
+                    self.get_group_member_info(GetGroupMemberInfoData(group_id=data.group_id, user_id=uin))
+                )
+            )
+        await asyncio.gather(*tasks)
+        return GetGroupMemberListResponse(
+            status="ok", retcode=0, data=GetGroupMemberListRsp.model_validate([x.result().data for x in tasks])
+        )
 
-    @on(GroupReaction)
-    async def group_reaction(self, data: GroupReactionData) -> GroupReactionResponse:
+    async def _group_reaction(self, data: GroupReactionData) -> GroupReactionResponse:
         msg_info = await info_mgr.msgid_mgr.fetch(data.message_id or 0)
         raw = data.emoji if data.emoji else (data.code or "")
         # NapCat/NTQQ 语义: emoji_id 为 ≤3 位数字时是经典 face id(type=1);
@@ -526,6 +522,14 @@ class LagrangeImpl:
             grp_id=data.group_id, msg_seq=msg_info.seq, content=content, is_cancel=not data.is_add
         )
         return GroupReactionResponse(status="ok", retcode=0, data=EmptyRsp())
+
+    @on(GroupReaction)
+    async def group_reaction(self, data: GroupReactionData) -> GroupReactionResponse:
+        return await self._group_reaction(data)
+
+    @on(SetGroupReaction)
+    async def set_group_reaction(self, data: GroupReactionData) -> GroupReactionResponse:
+        return await self._group_reaction(data)
 
     @on(SetGroupSpecialTitle)
     async def set_group_special_title(self, data: SetGroupSpecialTitleData) -> SetGroupSpecialTitleResponse:

@@ -47,10 +47,9 @@ __all__ = [
     "GetVersionInfoResponse",
     "GroupReaction",
     "GroupReactionResponse",
-    "SetGroupReaction",
+    "SendGroupForwardMessage",
     "SendGroupMessage",
     "SendGroupMsgData",
-    "SendGroupForwardMessage",
     "SendLike",
     "SendLikeResponse",
     "SendMessage",
@@ -76,6 +75,7 @@ __all__ = [
     "SetGroupLeaveResponse",
     "SetGroupName",
     "SetGroupNameResponse",
+    "SetGroupReaction",
     "SetGroupSpecialTitle",
     "SetGroupSpecialTitleResponse",
     "SetGroupWholeBan",
@@ -89,7 +89,7 @@ __all__ = [
 
 class BaseAPICall(BaseModel, Generic[DataType]):
     action: str
-    params: DataType
+    params: DataType = Field(default_factory=dict, validate_default=True)
     echo: Any = Field(default=None)
 
 
@@ -114,19 +114,19 @@ class SendGroupMessage(BaseAPICall[SendGroupMsgData]):
     action: Literal["send_group_msg"] = "send_group_msg"
 
 
+class SendMessage(BaseAPICall[SendMsgData]):
+    action: Literal["send_msg"] = "send_msg"
+
+
+class SendMessageResponse(BaseAPIResponse[SendMsgRsp]): ...
+
+
 class SendPrivateForwardMessage(BaseAPICall[SendPrivateMsgData]):
     action: Literal["send_private_forward_msg"] = "send_private_forward_msg"
 
 
 class SendGroupForwardMessage(BaseAPICall[SendGroupMsgData]):
     action: Literal["send_group_forward_msg"] = "send_group_forward_msg"
-
-
-class SendMessage(BaseAPICall[SendMsgData]):
-    action: Literal["send_msg"] = "send_msg"
-
-
-class SendMessageResponse(BaseAPIResponse[SendMsgRsp]): ...
 
 
 class DeleteMessage(BaseAPICall[DeleteMsgData]):
