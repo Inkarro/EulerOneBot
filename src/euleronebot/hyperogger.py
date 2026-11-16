@@ -20,12 +20,12 @@ class Levels:
         self.DEBUG = color_txt(f"|{nf_icons.nf_cod_debug_alt} Debug    |", rgb(93, 227, 144))
 
         self.level_nums = {
+            self.DEBUG: -2,
             self.TRACE: -1,
             self.INFO: 0,
             self.WARNING: 1,
             self.ERROR: 2,
             self.CRITICAL: 3,
-            self.DEBUG: 10,
         }
 
         self.level_names = {
