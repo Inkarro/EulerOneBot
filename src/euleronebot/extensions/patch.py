@@ -4,11 +4,14 @@ from collections.abc import Callable
 from typing import Any, Never
 
 from lagrange.client.base import BaseClient
+from lagrange.client.client import Client
 
+from euleronebot.config import loaded_config
 from euleronebot.hyperogger import Logger
 
 _HEARTBEAT_TIMEOUT = 10
 _heartbeat_timeout_patched = False
+_push_hex_dump_patched = False
 logger = Logger.fetch("euler").name_custom("euler.patches")
 
 
@@ -76,10 +79,56 @@ def patch_lagrange_heartbeat_recovery() -> None:
     BaseClient._heartbeat_task = resilient_heartbeat_task
 
 
+def _hex_dump(data: bytes, width: int = 16) -> str:
+    lines = []
+    for off in range(0, len(data), width):
+        chunk = data[off : off + width]
+        hex_part = " ".join(f"{b:02x}" for b in chunk)
+        ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"{off:08x}  {hex_part:<{width * 3 - 1}}  |{ascii_part}|")
+    return "\n".join(lines)
+
+
+def patch_push_hex_dump() -> None:
+    """
+    服务器推送包处理抛异常时,把解密后的完整包体以 HEX 转储,
+    便于定位协议解码错误(如 src_msg 快照含非 UTF-8 字节)。
+    仅在 log_level 为 DEBUG/TRACE 时安装,避免正常运行的额外开销。
+    """
+    global _push_hex_dump_patched
+    if _push_hex_dump_patched:
+        return
+
+    cfg = loaded_config
+    if cfg is None or cfg.log_level not in ("DEBUG", "TRACE"):
+        return
+
+    original_push_handler = Client.push_handler
+
+    async def push_handler_with_hex_dump(self: Client, sso: Any) -> None:
+        try:
+            await original_push_handler(self, sso)
+        except Exception:
+            try:
+                data = bytes(sso.data)
+                logger.error(
+                    f"推送包处理失败,cmd={sso.cmd!r} seq={sso.seq!r} "
+                    f"data({len(data)} bytes) HEX:\n{_hex_dump(data)}"
+                )
+            except Exception as dump_exc:
+                logger.error(f"推送包 HEX 转储失败: {dump_exc!r}")
+            raise
+
+    Client.push_handler = push_handler_with_hex_dump
+    logger.info("已启用推送包 HEX 转储(log_level=DEBUG/TRACE)")
+    _push_hex_dump_patched = True
+
+
 def apply_patches() -> None:
     patches: list[Callable[[], None]] = [
         patch_lagrange_heartbeat_timeout,
         patch_lagrange_heartbeat_recovery,
+        patch_push_hex_dump,
     ]
     for pt in patches:
         logger.trace(f"Applying patch for {pt.__name__}")
