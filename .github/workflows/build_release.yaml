@@ -112,8 +112,6 @@ jobs:
 
       - name: Compile with Nuitka
         shell: bash
-        env:
-          PYTHONPATH: ${{ github.workspace }}/patches
         run: |
           uv sync --frozen --no-default-groups --group build
 
@@ -125,7 +123,7 @@ jobs:
 
           uv run --no-sync python -m nuitka main.py \
             --onefile \
-            --output-filename="euler-onebot-$VERSION" \
+            --output-filename="euler-onebot-v$VERSION-${{ matrix.platform }}-${{ matrix.arch }}" \
             --output-dir="${{ matrix.output_dir }}" \
             --assume-yes-for-downloads \
             --disable-ccache \
@@ -141,6 +139,7 @@ jobs:
 
 
       - name: Locate release to attach to
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         id: release
         shell: bash
         env:
@@ -154,10 +153,10 @@ jobs:
           FAIL_IF_NONE="${{ inputs.fail_if_no_release || 'false' }}"
           MATCH_VERSION="${{ inputs.match_version || 'true' }}"
 
-          RELEASE_ID=""
+          RELEASE_TAG=""
 
           if [ "$EVENT" = "release" ]; then
-            RELEASE_ID="${{ github.event.release.id }}"
+            RELEASE_TAG="${{ github.event.release.tag_name }}"
           else
             while read -r TAG DRAFT NAME; do
 
@@ -167,8 +166,8 @@ jobs:
                 fi
               fi
 
-              RELEASE_ID="$(gh release view "$TAG" --json id --jq .id)"
-              echo "Attaching to release: $TAG (id=$RELEASE_ID)"
+              RELEASE_TAG="$TAG"
+              echo "Attaching to release: $TAG"
               break
 
             done < <(
@@ -180,7 +179,7 @@ jobs:
           fi
 
 
-          if [ -z "$RELEASE_ID" ]; then
+          if [ -z "$RELEASE_TAG" ]; then
             echo "No matching release found"
 
             if [ "$FAIL_IF_NONE" = "true" ]; then
@@ -192,20 +191,20 @@ jobs:
           else
 
             echo "release_found=true" >> "$GITHUB_OUTPUT"
-            echo "release_id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
           fi
 
 
       - name: Attach assets to release
-        if: steps.release.outputs.release_found == 'true'
+        if: (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && steps.release.outputs.release_found == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          RELEASE_ID="${{ steps.release.outputs.release_id }}"
+          RELEASE_TAG="${{ steps.release.outputs.release_tag }}"
 
           cd "${{ matrix.output_dir }}"
 
@@ -216,7 +215,7 @@ jobs:
             echo "Uploading $ASSET"
 
             gh release upload \
-              "$RELEASE_ID" \
+              "$RELEASE_TAG" \
               "$ASSET" \
               --clobber
 

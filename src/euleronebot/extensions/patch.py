@@ -12,7 +12,6 @@ from euleronebot.hyperogger import Logger
 _HEARTBEAT_TIMEOUT = 10
 _heartbeat_timeout_patched = False
 _push_hex_dump_patched = False
-_src_msg_decode_patched = False
 logger = Logger.fetch("euler").name_custom("euler.patches")
 
 
@@ -127,79 +126,11 @@ def patch_push_hex_dump() -> None:
     _push_hex_dump_patched = True
 
 
-def patch_src_msg_typed() -> None:
-    """
-    从根源修复"回复(引用)"消息预览文本损坏/协议层崩溃的问题。
-
-    根因:hiro-qq 把 SrcMsg.elems(引用快照的原文元素)声明为 list[dict],
-    dict 字段经 proto_decode 无限层递归试探解析。纯文本(如 b"@Sand Stone")
-    的字节恰好能构成合法 protobuf 时,bytes 被静默替换成 dict;decoder.py
-    随后 proto_encode(...).decode() 重组出的字节流破坏 UTF-8 边界,
-    轻则 Quote 预览乱码/丢段,重则 UnicodeDecodeError 使整条消息事件丢失。
-
-    补丁:把 SrcMsg.elems 替换为 typed 定义(list[SrcElem],
-    SrcElem.arg: SrcElemArg, SrcElemArg.text: bytes)。ProtoStruct.decode
-    走 proto_decode(data, 0)——不递归试探,text 字段原样保留字节,
-    @Sand Stone 之类的文本一字不差。
-
-    兼容性:decoder.py 对元素按 dict 方式访问(v.get(1, {1: b""})[1]),
-    故 SrcElem/SrcElemArg 提供 get/__getitem__ 模拟 dict 接口,使原解析
-    代码零改动即拿到原始文本字节。
-    """
-    global _src_msg_decode_patched
-    if _src_msg_decode_patched:
-        return
-
-    from lagrange.pb.message import rich_text as rt
-    from lagrange.pb.message.rich_text import elems as elems_pb
-    from lagrange.utils.binary.protobuf import ProtoStruct, proto_field
-
-    class SrcElemArg(ProtoStruct):
-        text: bytes = proto_field(1)
-
-        def __getitem__(self, key: int) -> bytes:
-            if key == 1:
-                return self.text
-            raise KeyError(key)
-
-        def get(self, key: int, default: Any = None) -> Any:
-            try:
-                return self[key]
-            except KeyError:
-                return default
-
-    class SrcElem(ProtoStruct):
-        arg: SrcElemArg | None = proto_field(1, default=None)
-
-        def get(self, key: int, default: Any = None) -> Any:
-            if key == 1:
-                return self.arg if self.arg is not None else default
-            return default
-
-    class SrcMsgTyped(ProtoStruct):
-        seq: int = proto_field(1)
-        uin: int = proto_field(2, default=0)
-        timestamp: int = proto_field(3)
-        elems: list[SrcElem] = proto_field(5, default_factory=list)
-        pb_reserved: elems_pb.SrcMsgArgs | None = proto_field(8, default=None)
-        to_uin: int = proto_field(10, default=0)
-
-    # Elems 类定义在 rich_text 包的 __init__(不是 elems 子模块),且类定义时
-    # 已把 src_msg 字段的类型绑定到旧 SrcMsg(存于 __proto_fields__),
-    # 仅替换模块属性无效,必须直接改字段类型引用。
-    elems_pb.SrcMsg = SrcMsgTyped
-    rt.Elems.__proto_fields__["src_msg"].type = SrcMsgTyped | None
-
-    logger.info("已启用 SrcMsg typed 解析补丁")
-    _src_msg_decode_patched = True
-
-
 def apply_patches() -> None:
     patches: list[Callable[[], None]] = [
         patch_lagrange_heartbeat_timeout,
         patch_lagrange_heartbeat_recovery,
         patch_push_hex_dump,
-        patch_src_msg_typed,
     ]
     for pt in patches:
         logger.trace(f"Applying patch for {pt.__name__}")

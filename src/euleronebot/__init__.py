@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from .config import BotConfig, load_config
-from .extensions.patch import apply_patches
+from .extensions import apply_patches
 from .hyperogger import Logger
 from .onebot import Adapter
 from .protocol import LagrangeProtocol

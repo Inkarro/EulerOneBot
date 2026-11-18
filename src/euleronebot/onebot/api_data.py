@@ -3,11 +3,10 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, RootModel
 
 from ..versions import NAME, VERSION
-from .segments import SegmentUnion
+from .segments import Node, SegmentUnion
 
 if TYPE_CHECKING:
     from .events import GroupSender, PrivateSender
-    from .segments import Node
 
     NODE = Node
     GROUP_SENDER = GroupSender
@@ -87,7 +86,7 @@ class SendGroupMsgData(BaseModel):
 
 class SendGroupForwardMsgData(BaseModel):
     group_id: int
-    messages: list[SegmentUnion]
+    messages: list[Node]
     # gocq/Overflow 会附带的外显字段,仅作兼容接收,不透传协议层
     source: str | None = None
     summary: str | None = None
@@ -97,7 +96,7 @@ class SendGroupForwardMsgData(BaseModel):
 
 class SendPrivateForwardMsgData(BaseModel):
     user_id: int
-    messages: list[SegmentUnion]
+    messages: list[Node]
 
 
 class SendMsgData(BaseModel):
