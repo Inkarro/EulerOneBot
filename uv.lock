@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 
 [[package]]
@@ -267,7 +267,7 @@ dev = [
 requires-dist = [
     { name = "aiosqlite" },
     { name = "fastapi" },
-    { name = "hiro-qq", git = "https://github.com/HarcicYang/hiro-qq.git" },
+    { name = "hiro-qq", git = "https://github.com/Inkarro/hiro-qq.git" },
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -314,8 +314,8 @@ wheels = [
 
 [[package]]
 name = "hiro-qq"
-version = "0.1.9"
-source = { git = "https://github.com/HarcicYang/hiro-qq.git#4327572afb0bdfa8bc906e1d43517dec1d9e2c46" }
+version = "0.2.0"
+source = { git = "https://github.com/Inkarro/hiro-qq.git#c12fcfe28caf61db101151a4762b481caf529e3c" }
 dependencies = [
     { name = "cryptography" },
     { name = "qrcode" },

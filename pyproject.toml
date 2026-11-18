@@ -21,7 +21,7 @@ dependencies = [
     "websockets",
     "python-multipart",
     "httpx",
-    "hiro-qq @ git+https://github.com/HarcicYang/hiro-qq.git",
+    "hiro-qq @ git+https://github.com/Inkarro/hiro-qq.git",
     "aiosqlite",
 ]
 

@@ -16,3 +16,4 @@ __pycache__/
 appinfo.json
 /sign_provider.py
 scripts/buffer.py
+/tmp/

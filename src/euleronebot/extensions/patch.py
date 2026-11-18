@@ -1,4 +1,3 @@
-import traceback
 from collections.abc import Callable
 from typing import Any
 
@@ -8,7 +7,7 @@ from euleronebot import config as _config
 from euleronebot.hyperogger import Logger
 
 _push_hex_dump_patched = False
-_qface_decode_patched = False
+_dump_keyword_patched = False
 _sign_blacklist_patched = False
 _current_sso: Any = None  # 最近一次推送的 SSOPacket,供取证转储读取
 logger = Logger.fetch("euler").name_custom("euler.patches")
@@ -67,75 +66,25 @@ def patch_push_hex_dump() -> None:
     _push_hex_dump_patched = True
 
 
-def patch_qface_decode() -> None:
+def patch_dump_keyword() -> None:
     """
-    修复新版 QQ 表情(如 [哭][偷感][复兴号] 等小黄脸新表情)接收时被静默丢弃的问题。
-
-    根因:新版表情在消息中以 common_elem 承载(service_type=33 普通新表情 /
-    37 动画大表情, business_type=1),而 hiro-qq 的 decoder.parse_msg_new
-    的 common_elem 分支未处理 33/37 两个 service_type,元素被静默跳过,
-    导致整条消息事件缺失该表情(与旧表情混发时旧表情正常、新表情消失)。
-
-    补丁:包装 parse_msg_new,在调用前预处理消息包——把 33/37 的
-    common_elem 转写为 face 元素(faceId 取自 QSmallFaceExtra{1} /
-    QBigFaceExtra{3},与 NapCat/QQNT 行为一致),使原函数走已有 face
-    分支产出 Emoji,表情不再丢失。
+    调试取证:消息含 JUST_FOR____DUMP____ 文本段时,HEX 转储该推送的
+    解密包体。parse_msg_new 拿不到 SSOPacket;由 push_handler 层包装器
+    (patch_push_hex_dump)把最近一次推送的 sso 写入 _current_sso
+    (push 循环为单协程顺序处理,无竞争)。不依赖 log_level。
     """
-    global _qface_decode_patched
-    if _qface_decode_patched:
+    global _dump_keyword_patched
+    if _dump_keyword_patched:
         return
 
     from lagrange.client.message import decoder as msg_decoder
-    from lagrange.pb.message.rich_text import elems as elems_pb
 
     original_parse_msg_new = msg_decoder.parse_msg_new
 
-    def _rewrite_qface(content: Any) -> None:
-        for el in content:
-            common = getattr(el, "common_elem", None)
-            if common is None:
-                continue
-            service_type = getattr(common, "service_type", None)
-            if service_type not in (33, 37):
-                # 未覆盖的 common_elem:输出明细以便发现新形态(低频,不会刷屏)
-                logger.warning(
-                    f"未处理的 common_elem: service_type={service_type!r} "
-                    f"bus_type={getattr(common, 'bus_type', None)!r} "
-                    f"pb_elem={getattr(common, 'pb_elem', None)!r}"
-                )
-                continue
-            # pb_elem 在 hiro-qq 里声明为 dict:ProtoStruct 解码时已经把字节
-            # 解成了 {1: faceId, 2: preview, ...},faceId 在字段 1
-            # (实测接收推送里 33/37 的 faceId 均在 f1;NapCat 发送结构的
-            #  QBigFaceExtra 才把 faceId 放 f3)。
-            # (切勿 bytes(pb_elem):bytes(dict) 只取键值域 0-255 的键,会得到
-            #  b"\x01\x02\x03" 之类的垃圾——曾导致表情解析全部失败的 bug)
-            pb_elem = getattr(common, "pb_elem", None)
-            if not isinstance(pb_elem, dict) or not pb_elem:
-                logger.warning(f"common_elem(33/37) pb_elem 非法: {pb_elem!r}")
-                continue
-            face_id = pb_elem.get(1)
-            if isinstance(pb_elem.get(3), int) and face_id is None:
-                face_id = pb_elem.get(3)  # 兜底:若某实现沿用发送结构(faceId=f3)
-            if not isinstance(face_id, int) or face_id <= 0:
-                logger.warning(f"faceId 异常: {face_id!r} (pb_elem={pb_elem!r})")
-                continue
-            logger.info(f"新版表情命中: service_type={common.service_type} faceId={face_id}")
-            el.face = elems_pb.Face(index=face_id)
-            el.common_elem = None
-
-    async def parse_msg_new_with_qface(
+    async def parse_msg_new_with_dump(
         client: Any, pkg: Any, fri_id: str | None = None, grp_id: int | None = None
     ) -> Any:
-        try:
-            content = pkg.message.body.content
-            _rewrite_qface(content)
-        except AttributeError:
-            pass
         result = await original_parse_msg_new(client, pkg, fri_id=fri_id, grp_id=grp_id)
-        # 调试魔法口令: 消息含 JUST_FOR____DUMP____ 文本段时,HEX 转储当前推送包体。
-        # parse_msg_new 拿不到 SSOPacket;由 push_handler 层包装器把最近一次推送
-        # 的 sso 写入 _current_sso(push 循环为单协程顺序处理,无竞争)。
         try:
             text = "".join(
                 (el.text.string or "") for el in pkg.message.body.content if getattr(el, "text", None) is not None
@@ -145,16 +94,14 @@ def patch_qface_decode() -> None:
         if text.startswith("JUST_FOR____DUMP____") and _current_sso is not None:
             try:
                 data = bytes(_current_sso.data)
-                logger.error(
-                    f"取证转储: data({len(data)} bytes) HEX:\n{_hex_dump(data)}"
-                )
+                logger.error(f"取证转储: data({len(data)} bytes) HEX:\n{_hex_dump(data)}")
             except Exception as dump_exc:
                 logger.error(f"取证转储失败: {dump_exc!r}")
         return result
 
-    msg_decoder.parse_msg_new = parse_msg_new_with_qface
-    logger.info("已启用新版 QQ 表情解析补丁")
-    _qface_decode_patched = True
+    msg_decoder.parse_msg_new = parse_msg_new_with_dump
+    logger.info("已启用取证口令(JUST_FOR____DUMP____)")
+    _dump_keyword_patched = True
 
 
 def patch_sign_blacklist() -> None:
@@ -195,7 +142,7 @@ def apply_patches() -> None:
     patches: list[Callable[[], None]] = [
         patch_sign_blacklist,
         patch_push_hex_dump,
-        patch_qface_decode,
+        patch_dump_keyword,
     ]
     for pt in patches:
         logger.trace(f"Applying patch for {pt.__name__}")
