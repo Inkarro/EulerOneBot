@@ -87,7 +87,6 @@ def patch_qface_decode() -> None:
 
     from lagrange.client.message import decoder as msg_decoder
     from lagrange.pb.message.rich_text import elems as elems_pb
-    from lagrange.utils.binary.protobuf import proto_decode
 
     original_parse_msg_new = msg_decoder.parse_msg_new
 
@@ -99,28 +98,29 @@ def patch_qface_decode() -> None:
             service_type = getattr(common, "service_type", None)
             if service_type not in (33, 37):
                 # 未覆盖的 common_elem:输出明细以便发现新形态(低频,不会刷屏)
-                pb = getattr(common, "pb_elem", None)
                 logger.warning(
                     f"未处理的 common_elem: service_type={service_type!r} "
                     f"bus_type={getattr(common, 'bus_type', None)!r} "
-                    f"pb_elem={bytes(pb).hex() if pb else None}"
+                    f"pb_elem={getattr(common, 'pb_elem', None)!r}"
                 )
                 continue
+            # pb_elem 在 hiro-qq 里声明为 dict:ProtoStruct 解码时已经把字节
+            # 解成了 {1: faceId, 2: preview, ...},faceId 在字段 1
+            # (实测接收推送里 33/37 的 faceId 均在 f1;NapCat 发送结构的
+            #  QBigFaceExtra 才把 faceId 放 f3)。
+            # (切勿 bytes(pb_elem):bytes(dict) 只取键值域 0-255 的键,会得到
+            #  b"\x01\x02\x03" 之类的垃圾——曾导致表情解析全部失败的 bug)
             pb_elem = getattr(common, "pb_elem", None)
-            if not pb_elem:
-                logger.warning(f"common_elem(33/37) 无 pb_elem: {common!r}")
+            if not isinstance(pb_elem, dict) or not pb_elem:
+                logger.warning(f"common_elem(33/37) pb_elem 非法: {pb_elem!r}")
                 continue
-            try:
-                decoded = proto_decode(bytes(pb_elem))
-                face_id = decoded.get(1) if common.service_type == 33 else decoded.get(3)
-                logger.info(f"新版表情命中: service_type={common.service_type} faceId={face_id} 原始={decoded}")
-            except Exception:
-                logger.warning(f"qface pb 解析失败: {bytes(pb_elem).hex()}")
-                logger.trace(traceback.format_exc())
-                continue
+            face_id = pb_elem.get(1)
+            if isinstance(pb_elem.get(3), int) and face_id is None:
+                face_id = pb_elem.get(3)  # 兜底:若某实现沿用发送结构(faceId=f3)
             if not isinstance(face_id, int) or face_id <= 0:
-                logger.warning(f"faceId 异常: {face_id!r} (decoded={decoded})")
+                logger.warning(f"faceId 异常: {face_id!r} (pb_elem={pb_elem!r})")
                 continue
+            logger.info(f"新版表情命中: service_type={common.service_type} faceId={face_id}")
             el.face = elems_pb.Face(index=face_id)
             el.common_elem = None
 
