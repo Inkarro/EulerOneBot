@@ -1,82 +1,14 @@
-import asyncio
-import traceback
 from collections.abc import Callable
-from typing import Any, Never
+from typing import Any
 
-from lagrange.client.base import BaseClient
 from lagrange.client.client import Client
 
 from euleronebot import config as _config
 from euleronebot.hyperogger import Logger
 
-_HEARTBEAT_TIMEOUT = 10
-_heartbeat_timeout_patched = False
 _push_hex_dump_patched = False
+_qface_decode_patched = False
 logger = Logger.fetch("euler").name_custom("euler.patches")
-
-
-def patch_lagrange_heartbeat_timeout() -> None:
-    """
-    This patch is here due to an unsure bug that lagrange event emitting might be dead unexpectedly without any logs.
-    """
-    global _heartbeat_timeout_patched
-    if _heartbeat_timeout_patched:
-        return
-
-    original_sso_heartbeat = BaseClient.sso_heartbeat
-
-    async def sso_heartbeat_with_total_timeout(self: BaseClient, *args: Any, **kwargs: Any) -> float:
-        try:
-            return await asyncio.wait_for(
-                original_sso_heartbeat(self, *args, **kwargs),
-                timeout=_HEARTBEAT_TIMEOUT,
-            )
-        except TimeoutError:
-            raise
-        except asyncio.CancelledError as exc:
-            task = asyncio.current_task()
-            if task is not None and task.cancelling():
-                raise
-            raise TimeoutError("Lagrange heartbeat response cancelled") from exc
-        except Exception as exc:
-            logger.error(f"Lagrange heartbeat failed: {exc!r}")
-            logger.trace(traceback.format_exc())
-            raise TimeoutError("Lagrange heartbeat unexpected failure") from exc
-
-    BaseClient.sso_heartbeat = sso_heartbeat_with_total_timeout
-    _heartbeat_timeout_patched = True
-
-
-def patch_lagrange_heartbeat_recovery() -> None:
-    """
-    Lagrange only recovers from asyncio.TimeoutError here. Any other exception kills
-    the heartbeat task silently while the TCP connection may remain half-open.
-    """
-
-    async def resilient_heartbeat_task(self: BaseClient) -> Never:
-        error_count = 0
-        while True:
-            await self.online.wait()
-            if not error_count:
-                await asyncio.sleep(self._heartbeat_interval)
-            try:
-                latency = await self.sso_heartbeat(True, 5)
-                logger.trace(f"Lagrange heartbeat {latency * 1000:.2f}ms")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                error_count += 1
-                if error_count < 3:
-                    logger.warning(f"Lagrange heartbeat failed ({error_count}/3): {exc!r}")
-                    continue
-                logger.error(f"Lagrange heartbeat failed {error_count} times, reconnecting: {exc!r}")
-                logger.trace(traceback.format_exc())
-                self.destroy_network()
-                await asyncio.sleep(_HEARTBEAT_TIMEOUT)
-                continue
-            error_count = 0
-
-    BaseClient._heartbeat_task = resilient_heartbeat_task
 
 
 def _hex_dump(data: bytes, width: int = 16) -> str:
@@ -92,7 +24,7 @@ def _hex_dump(data: bytes, width: int = 16) -> str:
 def patch_push_hex_dump() -> None:
     """
     服务器推送包处理抛异常时,把解密后的完整包体以 HEX 转储,
-    便于定位协议解码错误(如 src_msg 快照含非 UTF-8 字节)。
+    便于定位协议解码错误。
     仅在 log_level 为 DEBUG/TRACE 时安装,避免正常运行的额外开销。
     """
     global _push_hex_dump_patched
@@ -126,11 +58,70 @@ def patch_push_hex_dump() -> None:
     _push_hex_dump_patched = True
 
 
+def patch_qface_decode() -> None:
+    """
+    修复新版 QQ 表情(如 [哭][偷感][复兴号] 等小黄脸新表情)接收时被静默丢弃的问题。
+
+    根因:新版表情在消息中以 common_elem 承载(service_type=33 普通新表情 /
+    37 动画大表情, business_type=1),而 hiro-qq 的 decoder.parse_msg_new
+    的 common_elem 分支未处理 33/37 两个 service_type,元素被静默跳过,
+    导致整条消息事件缺失该表情(与旧表情混发时旧表情正常、新表情消失)。
+
+    补丁:包装 parse_msg_new,在调用前预处理消息包——把 33/37 的
+    common_elem 转写为 face 元素(faceId 取自 QSmallFaceExtra{1} /
+    QBigFaceExtra{3},与 NapCat/QQNT 行为一致),使原函数走已有 face
+    分支产出 Emoji,表情不再丢失。
+    """
+    global _qface_decode_patched
+    if _qface_decode_patched:
+        return
+
+    from lagrange.client.message import decoder as msg_decoder
+    from lagrange.pb.message.rich_text import elems as elems_pb
+    from lagrange.utils.binary.protobuf import proto_decode
+
+    original_parse_msg_new = msg_decoder.parse_msg_new
+
+    def _rewrite_qface(content: Any) -> None:
+        for el in content:
+            common = getattr(el, "common_elem", None)
+            if common is None or getattr(common, "service_type", None) not in (33, 37):
+                continue
+            pb_elem = getattr(common, "pb_elem", None)
+            if not pb_elem:
+                continue
+            try:
+                if common.service_type == 33:
+                    face_id = proto_decode(bytes(pb_elem)).get(1)
+                else:
+                    face_id = proto_decode(bytes(pb_elem)).get(3)
+            except Exception:
+                logger.trace(traceback.format_exc())
+                continue
+            if not isinstance(face_id, int) or face_id <= 0:
+                continue
+            el.face = elems_pb.Face(index=face_id)
+            el.common_elem = None
+
+    async def parse_msg_new_with_qface(
+        client: Any, pkg: Any, fri_id: str | None = None, grp_id: int | None = None
+    ) -> Any:
+        try:
+            content = pkg.message.body.content
+            _rewrite_qface(content)
+        except AttributeError:
+            pass
+        return await original_parse_msg_new(client, pkg, fri_id=fri_id, grp_id=grp_id)
+
+    msg_decoder.parse_msg_new = parse_msg_new_with_qface
+    logger.info("已启用新版 QQ 表情解析补丁")
+    _qface_decode_patched = True
+
+
 def apply_patches() -> None:
     patches: list[Callable[[], None]] = [
-        patch_lagrange_heartbeat_timeout,
-        patch_lagrange_heartbeat_recovery,
         patch_push_hex_dump,
+        patch_qface_decode,
     ]
     for pt in patches:
         logger.trace(f"Applying patch for {pt.__name__}")
