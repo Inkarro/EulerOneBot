@@ -8,6 +8,7 @@ from euleronebot.hyperogger import Logger
 
 _push_hex_dump_patched = False
 _qface_decode_patched = False
+_sign_blacklist_patched = False
 logger = Logger.fetch("euler").name_custom("euler.patches")
 
 
@@ -118,8 +119,43 @@ def patch_qface_decode() -> None:
     _qface_decode_patched = True
 
 
+def patch_sign_blacklist() -> None:
+    """
+    修复上游兼容安卓协议时连带搞烂 linux 协议签名的问题。
+
+    该改动给 SIGN_PKG_LIST 新增了 OidbSvcTrpcTcp.0xfe1_2 / 0xfe1_8 /
+    0xe37_1700 三个命令(安卓端签名需要),但常见签名服务器并不支持
+    它们——服务器返回 403 {"code":-1,"message":"Unsupported sign
+    command"},而 get_user_info 是高频调用,于是每条消息都触发 3 轮
+    签名重试后抛 ConnectionError,事件处理跟着失败,签名报错刷屏。
+    Linux 协议下这些命令此前一直无需签名,剔除即可恢复原状。
+
+    若签名服务器已支持这些命令,本补丁无副作用(get_sign 对不在
+    名单的命令直接返回空签名)。
+    """
+    global _sign_blacklist_patched
+    if _sign_blacklist_patched:
+        return
+
+    from lagrange.utils import sign as sign_mod
+
+    _UNSUPPORTED = {
+        "OidbSvcTrpcTcp.0xfe1_2",
+        "OidbSvcTrpcTcp.0xfe1_8",
+        "OidbSvcTrpcTcp.0xe37_1700",
+    }
+    removed = [cmd for cmd in sign_mod.SIGN_PKG_LIST if cmd in _UNSUPPORTED]
+    if not removed:
+        logger.info("签名白名单已不含目标命令,跳过补丁")
+        return
+    sign_mod.SIGN_PKG_LIST[:] = [cmd for cmd in sign_mod.SIGN_PKG_LIST if cmd not in _UNSUPPORTED]
+    logger.info(f"已从签名白名单剔除 {removed}")
+    _sign_blacklist_patched = True
+
+
 def apply_patches() -> None:
     patches: list[Callable[[], None]] = [
+        patch_sign_blacklist,
         patch_push_hex_dump,
         patch_qface_decode,
     ]
