@@ -113,7 +113,7 @@ jobs:
       - name: Compile with Nuitka
         shell: bash
         run: |
-          uv sync --frozen --no-default-groups --group build
+          uv sync --no-default-groups --group build
 
           EXTRA_ARGS=()
 
