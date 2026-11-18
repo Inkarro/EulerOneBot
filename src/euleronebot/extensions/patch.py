@@ -10,6 +10,7 @@ from euleronebot.hyperogger import Logger
 _push_hex_dump_patched = False
 _qface_decode_patched = False
 _sign_blacklist_patched = False
+_current_sso: Any = None  # 最近一次推送的 SSOPacket,供取证转储读取
 logger = Logger.fetch("euler").name_custom("euler.patches")
 
 
@@ -25,9 +26,10 @@ def _hex_dump(data: bytes, width: int = 16) -> str:
 
 def patch_push_hex_dump() -> None:
     """
-    服务器推送包处理抛异常时,把解密后的完整包体以 HEX 转储,
-    便于定位协议解码错误。
-    仅在 log_level 为 DEBUG/TRACE 时安装,避免正常运行的额外开销。
+    包装 push_handler:
+    1. 记录最近一次推送的 SSOPacket,供取证口令(JUST_FOR____DUMP____)读取;
+    2. 处理抛异常时,若 log_level 为 DEBUG/TRACE,输出解密包体的 HEX 转储。
+    取证口令不依赖 log_level,随时可用。
     """
     global _push_hex_dump_patched
     if _push_hex_dump_patched:
@@ -36,27 +38,32 @@ def patch_push_hex_dump() -> None:
     # 动态读取模块属性:apply_patches() 在 setup() 之后才运行,
     # 不能用 from-import(它绑定的是导入时的 None)
     cfg = _config.loaded_config
-    if cfg is None or cfg.log_level not in ("DEBUG", "TRACE"):
-        return
+    dump_on_error = bool(cfg and cfg.log_level in ("DEBUG", "TRACE"))
 
     original_push_handler = Client.push_handler
 
     async def push_handler_with_hex_dump(self: Client, sso: Any) -> None:
+        global _current_sso
+        _current_sso = sso
         try:
             await original_push_handler(self, sso)
         except Exception:
-            try:
-                data = bytes(sso.data)
-                logger.error(
-                    f"推送包处理失败,cmd={sso.cmd!r} seq={sso.seq!r} "
-                    f"data({len(data)} bytes) HEX:\n{_hex_dump(data)}"
-                )
-            except Exception as dump_exc:
-                logger.error(f"推送包 HEX 转储失败: {dump_exc!r}")
+            if dump_on_error:
+                try:
+                    data = bytes(sso.data)
+                    logger.error(
+                        f"推送包处理失败,cmd={sso.cmd!r} seq={sso.seq!r} "
+                        f"data({len(data)} bytes) HEX:\n{_hex_dump(data)}"
+                    )
+                except Exception as dump_exc:
+                    logger.error(f"推送包 HEX 转储失败: {dump_exc!r}")
             raise
 
     Client.push_handler = push_handler_with_hex_dump
-    logger.info("已启用推送包 HEX 转储(log_level=DEBUG/TRACE)")
+    logger.info(
+        "已启用推送包捕获"
+        + ("(含异常 HEX 转储)" if dump_on_error else "(仅取证口令,异常转储需 DEBUG/TRACE)")
+    )
     _push_hex_dump_patched = True
 
 
@@ -87,20 +94,32 @@ def patch_qface_decode() -> None:
     def _rewrite_qface(content: Any) -> None:
         for el in content:
             common = getattr(el, "common_elem", None)
-            if common is None or getattr(common, "service_type", None) not in (33, 37):
+            if common is None:
+                continue
+            service_type = getattr(common, "service_type", None)
+            if service_type not in (33, 37):
+                # 未覆盖的 common_elem:输出明细以便发现新形态(低频,不会刷屏)
+                pb = getattr(common, "pb_elem", None)
+                logger.warning(
+                    f"未处理的 common_elem: service_type={service_type!r} "
+                    f"bus_type={getattr(common, 'bus_type', None)!r} "
+                    f"pb_elem={bytes(pb).hex() if pb else None}"
+                )
                 continue
             pb_elem = getattr(common, "pb_elem", None)
             if not pb_elem:
+                logger.warning(f"common_elem(33/37) 无 pb_elem: {common!r}")
                 continue
             try:
-                if common.service_type == 33:
-                    face_id = proto_decode(bytes(pb_elem)).get(1)
-                else:
-                    face_id = proto_decode(bytes(pb_elem)).get(3)
+                decoded = proto_decode(bytes(pb_elem))
+                face_id = decoded.get(1) if common.service_type == 33 else decoded.get(3)
+                logger.info(f"新版表情命中: service_type={common.service_type} faceId={face_id} 原始={decoded}")
             except Exception:
+                logger.warning(f"qface pb 解析失败: {bytes(pb_elem).hex()}")
                 logger.trace(traceback.format_exc())
                 continue
             if not isinstance(face_id, int) or face_id <= 0:
+                logger.warning(f"faceId 异常: {face_id!r} (decoded={decoded})")
                 continue
             el.face = elems_pb.Face(index=face_id)
             el.common_elem = None
@@ -113,7 +132,25 @@ def patch_qface_decode() -> None:
             _rewrite_qface(content)
         except AttributeError:
             pass
-        return await original_parse_msg_new(client, pkg, fri_id=fri_id, grp_id=grp_id)
+        result = await original_parse_msg_new(client, pkg, fri_id=fri_id, grp_id=grp_id)
+        # 调试魔法口令: 消息含 JUST_FOR____DUMP____ 文本段时,HEX 转储当前推送包体。
+        # parse_msg_new 拿不到 SSOPacket;由 push_handler 层包装器把最近一次推送
+        # 的 sso 写入 _current_sso(push 循环为单协程顺序处理,无竞争)。
+        try:
+            text = "".join(
+                (el.text.string or "") for el in pkg.message.body.content if getattr(el, "text", None) is not None
+            )
+        except Exception:
+            text = ""
+        if text.startswith("JUST_FOR____DUMP____") and _current_sso is not None:
+            try:
+                data = bytes(_current_sso.data)
+                logger.error(
+                    f"取证转储: data({len(data)} bytes) HEX:\n{_hex_dump(data)}"
+                )
+            except Exception as dump_exc:
+                logger.error(f"取证转储失败: {dump_exc!r}")
+        return result
 
     msg_decoder.parse_msg_new = parse_msg_new_with_qface
     logger.info("已启用新版 QQ 表情解析补丁")
