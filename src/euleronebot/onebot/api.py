@@ -1,6 +1,6 @@
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 from .api_data import *
 
@@ -75,6 +75,13 @@ __all__ = [
     "SetGroupKickResponse",
     "SetGroupLeave",
     "SetGroupLeaveResponse",
+    "SetGroupSign",
+    "SendGroupSign",
+    "SetGroupSignResponse",
+    "SetEssenceMsg",
+    "DeleteEssenceMsg",
+    "SetEssenceMsgResponse",
+    "DeleteEssenceMsgResponse",
     "SetGroupName",
     "SetGroupNameResponse",
     "SetGroupReaction",
@@ -100,6 +107,16 @@ class BaseAPIResponse(BaseModel, Generic[ResponseType]):
     retcode: int
     data: ResponseType | None
     echo: Any = Field(default=None)
+    # 带缓存的查询接口会设置它：True 表示这次的数据来自缓存，False 表示刚从服务器查到的；
+    # 没有设置（None）时不出现在响应里
+    cached: bool | None = Field(default=None)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_cached(self, handler):
+        result = handler(self)
+        if self.cached is None:
+            result.pop("cached", None)
+        return result
 
 
 class AsyncResponse(BaseAPIResponse[EmptyRsp]):
@@ -213,6 +230,33 @@ class SetGroupLeave(BaseAPICall[SetGroupLeaveData]):
 
 
 class SetGroupLeaveResponse(BaseAPIResponse[EmptyRsp]): ...
+
+
+class SetGroupSign(BaseAPICall[SetGroupSignData]):
+    action: Literal["set_group_sign"] = "set_group_sign"
+
+
+class SendGroupSign(BaseAPICall[SetGroupSignData]):
+    """NapCat 扩展接口的别名，作用与 set_group_sign 相同"""
+
+    action: Literal["send_group_sign"] = "send_group_sign"
+
+
+class SetGroupSignResponse(BaseAPIResponse[GroupSignRsp]): ...
+
+
+class SetEssenceMsg(BaseAPICall[SetEssenceMsgData]):
+    action: Literal["set_essence_msg"] = "set_essence_msg"
+
+
+class SetEssenceMsgResponse(BaseAPIResponse[EmptyRsp]): ...
+
+
+class DeleteEssenceMsg(BaseAPICall[SetEssenceMsgData]):
+    action: Literal["delete_essence_msg"] = "delete_essence_msg"
+
+
+class DeleteEssenceMsgResponse(BaseAPIResponse[EmptyRsp]): ...
 
 
 class SetGroupSpecialTitle(BaseAPICall[SetGroupSpecialTitleData]):

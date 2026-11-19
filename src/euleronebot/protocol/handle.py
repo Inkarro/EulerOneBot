@@ -1,5 +1,6 @@
 import time
 import traceback
+from urllib.parse import parse_qs, urlsplit
 from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
@@ -21,7 +22,10 @@ from lagrange.client.events.friend import (
 )
 from lagrange.client.events.group import (
     GroupAdminChange,
+    GroupInvite,
     GroupMemberJoined,
+    GroupNameChanged,
+    GroupSelfJoined,
     GroupMemberJoinedByInvite,
     GroupMemberJoinRequest,
     GroupMemberQuit,
@@ -32,11 +36,12 @@ from lagrange.client.events.group import (
     GroupRecall,
 )
 from lagrange.client.events.service import ClientOffline, ClientOnline, ServerKick
+from lagrange.client.message.elems import Json
 
 from ..hyperogger import Logger
 from ..onebot import Adapter as OneBotAdapter
 from ..onebot import events as onebot_events
-from ..utils.infomgr import MsgInfo, info_mgr
+from ..utils.infomgr import MsgInfo, RequestInfo, info_mgr
 from ..utils.transformer import to_onebot_msg
 
 if TYPE_CHECKING:
@@ -49,6 +54,33 @@ __all__ = ["LagrangeEventHandler"]
 logger = Logger.fetch("euler").name_custom("euler.protocol.handle")
 LagrangeEvent = BaseEvent
 F = TypeVar("F", bound=Callable[..., object])
+
+
+# fetch_grp_request 里「机器人被邀请入群」这一类请求的 event_type（实测可以用它同意邀请）
+BOT_INVITE_EV_TYPE = 2
+
+
+def parse_invite_card(raw: bytes | str) -> tuple[int, int, int, int] | None:
+    """
+    解析「邀请你加入群聊」卡片（app 消息，bizsrc 为 qun.invite），返回 (群号, 请求序号, 邀请人, 被邀请人)。
+    不是这种卡片或缺字段就返回 None。卡片里的 msgseq 就是同意邀请要用的请求序号。
+    """
+    import json
+
+    try:
+        data = json.loads(raw)
+        if data.get("bizsrc") != "qun.invite":
+            return None
+        url = data["meta"]["news"]["jumpUrl"]
+        query = parse_qs(urlsplit(url).query)
+        return (
+            int(query["groupcode"][0]),
+            int(query["msgseq"][0]),
+            int(query.get("senderuin", ["0"])[0]),
+            int(query.get("receiveruin", ["0"])[0]),
+        )
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None
 
 
 class HandlerHook:
@@ -99,6 +131,14 @@ class LagrangeEventHandler:
 
         self.last_handled = time.time()
 
+    def _update_cache(self, fn: Callable[..., None], *args) -> None:
+        """服务器推送了变更时顺手更新信息缓存；缓存出问题绝不能影响事件本身的处理"""
+        try:
+            fn(*args)
+        except Exception:  # noqa: BLE001
+            logger.error("update info cache failed")
+            logger.trace(traceback.format_exc())
+
     @staticmethod
     def _make_safe(handler):
         async def wrapper(client, event):
@@ -123,7 +163,7 @@ class LagrangeEventHandler:
         self.adapter.connector.self_id = client.uin
         await self.protocol.emit_lifecycle("connect")
         if not self.info_updated:
-            await info_mgr.uid_mgr.load_all(client)
+            await info_mgr.uid_mgr.load_all(client, self.protocol.impl.prewarm_cache)
             self.info_updated = True
 
     @on(ClientOffline)
@@ -146,14 +186,11 @@ class LagrangeEventHandler:
         logger.info(f"[Group] {event.grp_name}({event.grp_id}): @{event.nickname}({event.uin}): {event.msg}")
         if not await info_mgr.uid_mgr.is_exist(event.uid):
             await info_mgr.uid_mgr.add(event.uid, event.uin)
-        guser_info = (await client.get_grp_member_info(event.grp_id, event.uid)).body[0]
-        user_info = await client.get_user_info(event.uid)
-        if guser_info.is_owner:
-            role = "owner"
-        elif guser_info.is_admin:
-            role = "admin"
-        else:
-            role = "member"
+        # 发送者资料走缓存（群成员信息来自按群缓存的成员表）；取不到就降级，消息照常上报
+        impl = self.protocol.impl
+        member = await impl.try_member(event.grp_id, event.uin)
+        user_info = await impl.try_user_info(event.uin, event.uid)
+        role = member.role if member else "member"
         ev = onebot_events.GroupMessageEvent(
             time=event.time,
             self_id=self.lag.client.uin,
@@ -175,13 +212,13 @@ class LagrangeEventHandler:
             group_id=event.grp_id,
             raw_message=event.msg,
             sender=onebot_events.GroupSender(
-                age=user_info.age,
-                area=f"{user_info.country} {user_info.province} {user_info.city}",
-                card="" if not guser_info.name else guser_info.name.string,
-                level="" if not guser_info.level else str(guser_info.level.num),
-                nickname=user_info.name,
+                age=user_info.age if user_info else 0,
+                area=f"{user_info.country} {user_info.province} {user_info.city}" if user_info else "",
+                card=member.card if member else "",
+                level=member.level if member else "",
+                nickname=user_info.name if user_info else event.nickname,
                 role=role,
-                sex=user_info.sex.name if user_info.sex.name != "notset" else "unknown",  # type: ignore
+                sex=(user_info.sex.name if user_info.sex.name != "notset" else "unknown") if user_info else "unknown",  # type: ignore
                 title="",
                 user_id=event.uin,
             ),
@@ -193,9 +230,15 @@ class LagrangeEventHandler:
         if event.from_uin == self.lag.client.uin or len(event.msg_chain) == 0:
             return
         logger.info(f"[Friend] {event.from_uin} -> {event.to_uin}: {event.msg}")
+        try:
+            await self._check_invite_card(event)
+        except Exception:  # noqa: BLE001
+            logger.error("handle invite card failed")
+            logger.trace(traceback.format_exc())
         if not await info_mgr.uid_mgr.is_exist(event.from_uid):
             await info_mgr.uid_mgr.add(event.from_uid, event.from_uin)
-        user_info = await self.lag.client.get_user_info(event.from_uid)
+        # 发送者资料走缓存；取不到就降级，消息照常上报
+        user_info = await self.protocol.impl.try_user_info(event.from_uin, event.from_uid)
         ev = onebot_events.PrivateMessageEvent(
             time=event.timestamp,
             self_id=self.lag.client.uin,
@@ -216,9 +259,9 @@ class LagrangeEventHandler:
             message=await to_onebot_msg(event=event, adp=self.protocol),
             raw_message=event.msg,
             sender=onebot_events.PrivateSender(
-                age=user_info.age,
-                nickname=user_info.name,
-                sex=user_info.sex.name if user_info.sex.name != "notset" else "unknown",  # type: ignore
+                age=user_info.age if user_info else 0,
+                nickname=user_info.name if user_info else "",
+                sex=(user_info.sex.name if user_info.sex.name != "notset" else "unknown") if user_info else "unknown",  # type: ignore
                 user_id=event.from_uin,
             ),
         )
@@ -288,6 +331,7 @@ class LagrangeEventHandler:
         if event.join_type:
             return
         logger.info(f"[Group] {event.grp_id}: member {event.uid} has joined")
+        self._update_cache(self.protocol.impl.cache.on_member_joined, event.grp_id)
         try:
             uin = await info_mgr.uid_mgr.from_uid(event.uid)
         except ValueError:
@@ -308,6 +352,7 @@ class LagrangeEventHandler:
     @on(GroupMemberJoinedByInvite)
     async def grp_invite_join_handler(self, _client: Client, event: GroupMemberJoinedByInvite) -> None:
         logger.info(f"[Group] {event.grp_id}: member {event.uin} has joined, invited by {event.invitor_uin}")
+        self._update_cache(self.protocol.impl.cache.on_member_joined, event.grp_id)
         ev = onebot_events.GroupIncreaseEvent(
             group_id=event.grp_id,
             operator_id=event.invitor_uin,
@@ -339,6 +384,14 @@ class LagrangeEventHandler:
             tp = "leave"
         if not await info_mgr.uid_mgr.is_exist(event.uin) and event.uin != event.grp_id:
             await info_mgr.uid_mgr.add(event.uid, event.uin)
+        try:
+            quit_uin = await info_mgr.uid_mgr.from_uid(event.uid)
+        except ValueError:
+            quit_uin = 0
+        if event.is_kicked_self or quit_uin == self.lag.client.uin:
+            self._update_cache(self.protocol.impl.cache.on_self_group_changed)
+        else:
+            self._update_cache(self.protocol.impl.cache.on_member_left, event.grp_id, quit_uin)
         ev = onebot_events.GroupDecreaseEvent(
             group_id=event.uin,
             operator_id=opt_uin,
@@ -419,6 +472,66 @@ class LagrangeEventHandler:
         )
         await self.adapter.trigger(ev)
 
+    async def _emit_bot_invite(self, grp_id: int, seq: int, invitor_uin: int, comment: str = "") -> bool:
+        """上报一次「机器人被邀请入群」。同一次邀请（群号 + 序号）只上报一次——卡片和服务器推送都可能带来。"""
+        info = RequestInfo(type="group", id=grp_id, seq=seq, ev_type=BOT_INVITE_EV_TYPE)
+        if await info_mgr.req_mgr.has(info):
+            return False
+        flag = await info_mgr.req_mgr.set_group(grp_id=grp_id, seq=seq, ev_type=BOT_INVITE_EV_TYPE)
+        logger.info(f"[Group] bot was invited to {grp_id} by {invitor_uin} (seq={seq}, flag={flag})")
+        await self.adapter.trigger(
+            onebot_events.GroupRequestEvent(
+                time=round(time.time()),
+                self_id=self.lag.client.uin,
+                sub_type="invite",
+                group_id=grp_id,
+                user_id=invitor_uin,
+                comment=comment,
+                flag=flag,
+            )
+        )
+        return True
+
+    async def _check_invite_card(self, event: FriendMessage) -> None:
+        """私聊里收到「邀请你加入群聊」卡片 -> 上报成入群邀请事件"""
+        for elem in event.msg_chain:
+            if not isinstance(elem, Json):
+                continue
+            card = parse_invite_card(elem.raw)
+            if card is None:
+                continue
+            grp_id, seq, sender_uin, receiver_uin = card
+            if receiver_uin and receiver_uin != self.lag.client.uin:
+                logger.info(f"[Friend] 邀请卡片的接收人({receiver_uin})不是本账号，忽略")
+                continue
+            # 邀请人用实际发消息的人，而不是卡片里自己声称的 senderuin（卡片内容可以是转发来的）
+            if sender_uin and sender_uin != event.from_uin:
+                logger.info(f"[Friend] 邀请卡片里的邀请人({sender_uin})和发送者({event.from_uin})不同，按发送者算")
+            await self._emit_bot_invite(grp_id, seq, event.from_uin)
+
+    @on(GroupInvite)
+    async def bot_invited_handler(self, _client: Client, event: GroupInvite) -> None:
+        """服务器推送：机器人被邀请入群。到待处理请求列表里找出对应的那一项，上报成入群邀请事件"""
+        logger.info(f"[Group] invitation push: group {event.grp_id}, invitor_uid {event.invitor_uid}")
+        rev = await self.lag.client.fetch_grp_request()
+        found = False
+        for i in rev.requests:
+            if i.group.grp_id != event.grp_id:
+                continue
+            logger.info(f"[Group] pending request: group={i.group.grp_id} type={i.event_type} state={i.state} seq={i.seq}")
+            if i.event_type != BOT_INVITE_EV_TYPE:
+                continue
+            found = True
+            invitor_uid = (i.invitor.uid if i.invitor else "") or event.invitor_uid
+            try:
+                invitor_uin = await info_mgr.uid_mgr.from_uid(invitor_uid)
+            except ValueError:
+                invitor_uin = 0
+            await self._emit_bot_invite(i.group.grp_id, i.seq, invitor_uin, i.comment)
+        if not found:
+            # 实测：推送先于邀请卡片到达，此时待处理请求列表里还没有这次邀请，邀请由随后到达的邀请卡片上报
+            logger.info(f"[Group] 群 {event.grp_id} 的邀请推送：待处理请求里还没有对应的邀请项，等邀请卡片")
+
     @on(GroupMemberJoinRequest)
     async def join_req_handler(self, _client: Client, event: GroupMemberJoinRequest) -> None:
         rev = await self.lag.client.fetch_grp_request()
@@ -444,12 +557,21 @@ class LagrangeEventHandler:
         )
         await self.adapter.trigger(ev)
 
+    @on(GroupNameChanged)
+    async def grp_name_handler(self, _client: Client, event: GroupNameChanged) -> None:
+        self._update_cache(self.protocol.impl.cache.on_group_name_changed, event.grp_id, event.name_new)
+
+    @on(GroupSelfJoined)
+    async def grp_self_joined_handler(self, _client: Client, _event: GroupSelfJoined) -> None:
+        self._update_cache(self.protocol.impl.cache.on_self_group_changed)
+
     @on(GroupAdminChange)
     async def grp_admin_handler(self, _client: Client, event: GroupAdminChange) -> None:
         try:
             uin = await info_mgr.uid_mgr.from_uid(event.uid)
         except ValueError:
             uin = 0
+        self._update_cache(self.protocol.impl.cache.on_admin_changed, event.grp_id, uin, event.is_set)
 
         ev = onebot_events.GroupAdminEvent(
             time=round(time.time()),

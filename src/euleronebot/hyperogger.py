@@ -1,12 +1,85 @@
 import datetime
 import logging
+import os
+import re
 import sys
 import traceback
+from pathlib import Path
 from typing import Any, ClassVar
 
 from .utils import NerdICONs, color_txt, rgb
 
 __all__ = ["Levels", "Logger"]
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_PRIVATE_USE_RE = re.compile("[\ue000-\uf8ff]")  # Nerd Font 图标，文件里不需要
+
+
+class _FileSink:
+    """
+    把日志同时写进文件：每行写完立刻刷新，所以可以用 tail -f 之类实时查看，
+    重定向 / 管道场景下也不会因为缓冲而迟迟看不到输出。
+
+    - 位置：当前工作目录下的 logs/euler-YYYY-MM-DD.log（和 appconfig.json 同一目录），按天分文件，
+      只保留最近 ``KEEP_DAYS`` 天；
+    - 内容：去掉颜色码和图标字符的纯文本，UTF-8；
+    - 环境变量 ``EULER_LOG_FILE=0`` 可以关闭；
+    - 写文件出任何问题都只会关闭文件日志，绝不影响程序本身和控制台输出。
+    """
+
+    KEEP_DAYS = 14
+
+    def __init__(self) -> None:
+        self._file = None
+        self._day: datetime.date | None = None
+        self._enabled = os.environ.get("EULER_LOG_FILE", "1").strip().lower() not in ("0", "false", "off", "no")
+
+    def write(self, text: str) -> None:
+        if not self._enabled:
+            return
+        try:
+            today = datetime.date.today()
+            if self._file is None or today != self._day:
+                self._open(today)
+            line = _PRIVATE_USE_RE.sub("", _ANSI_RE.sub("", text)).rstrip("\n")
+            self._file.write(line + "\n")  # type: ignore[union-attr]
+            self._file.flush()  # type: ignore[union-attr]
+        except Exception as e:  # noqa: BLE001
+            self._enabled = False
+            print(f"[euler.log] 写日志文件失败，已关闭文件日志: {e!r}", file=sys.stderr)
+
+    def _open(self, today: datetime.date) -> None:
+        if self._file is not None:
+            try:
+                self._file.close()
+            except Exception:  # noqa: BLE001
+                pass
+        directory = Path("logs")
+        directory.mkdir(parents=True, exist_ok=True)
+        self._file = open(directory / f"euler-{today.isoformat()}.log", "a", encoding="utf-8")  # noqa: SIM115
+        self._day = today
+        self._prune(directory, today)
+
+    def _prune(self, directory: Path, today: datetime.date) -> None:
+        for f in directory.glob("euler-*.log"):
+            try:
+                day = datetime.date.fromisoformat(f.stem.removeprefix("euler-"))
+            except ValueError:
+                continue
+            if (today - day).days > self.KEEP_DAYS:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+_file_sink = _FileSink()
+
+
+def _emit(content: str) -> None:
+    """控制台和日志文件一起输出，并且立刻刷新"""
+    print(content, flush=True)
+    _file_sink.write(content)
 
 
 class Levels:
@@ -128,10 +201,10 @@ class Logger:
                     content = f" {time} {level} {color_txt(i, rgb(215, 255, 255))}"
                 else:
                     content = " " * int((len(f"{time}{level}") - 2) / 2) + color_txt(i, rgb(215, 255, 255))
-                print(content)
+                _emit(content)
         else:
             content = f" {time} {level} {color_txt(message, rgb(215, 255, 255))}"
-            print(content)
+            _emit(content)
 
     def log(self, message: str, level: str) -> None:
         self._log(message, level)

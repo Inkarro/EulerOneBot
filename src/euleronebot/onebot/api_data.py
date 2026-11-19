@@ -66,6 +66,9 @@ __all__ = [
     "SetGroupCardData",
     "SetGroupKickData",
     "SetGroupLeaveData",
+    "SetGroupSignData",
+    "SetEssenceMsgData",
+    "GroupSignRsp",
     "SetGroupNameData",
     "SetGroupSpecialTitleData",
     "SetGroupWholeBanData",
@@ -119,6 +122,7 @@ class EmptyRsp(BaseModel): ...
 
 class GetMsgData(BaseModel):
     message_id: int
+    no_cache: bool = False
 
 
 class GetMsgRsp(BaseModel):
@@ -132,6 +136,7 @@ class GetMsgRsp(BaseModel):
 
 class GetForwardMsgData(BaseModel):
     id: str
+    no_cache: bool = False
 
 
 class GetForwardMsgRsp(BaseModel):
@@ -182,6 +187,22 @@ class SetGroupNameData(BaseModel):
     group_name: str
 
 
+class SetGroupSignData(BaseModel):
+    group_id: int
+
+
+class SetEssenceMsgData(BaseModel):
+    message_id: int
+
+
+class GroupSignRsp(BaseModel):
+    """群打卡的 OIDB 回包，原样带回，方便判断这次打卡的结果"""
+
+    ret_code: int = 0
+    err_msg: str = ""
+    data_hex: str = ""
+
+
 class SetGroupLeaveData(BaseModel):
     group_id: int
     is_dismiss: bool = False
@@ -204,10 +225,11 @@ class SetGroupAddRequestData(BaseModel):
     flag: str
     sub_type: Literal["add", "invite"]
     approve: bool = True
-    reason: str
+    reason: str = ""
 
 
-class GetLoginInfoData(BaseModel): ...
+class GetLoginInfoData(BaseModel):
+    no_cache: bool = False
 
 
 class GetLoginInfoRsp(BaseModel):
@@ -227,7 +249,8 @@ class GetStrangerInfoRsp(BaseModel):
     age: int
 
 
-class GetFriendListData(BaseModel): ...
+class GetFriendListData(BaseModel):
+    no_cache: bool = False
 
 
 class FriendElem(BaseModel):
@@ -251,7 +274,8 @@ class GetGroupInfoRsp(BaseModel):
     max_member_count: int
 
 
-class GetGroupListData(BaseModel): ...
+class GetGroupListData(BaseModel):
+    no_cache: bool = False
 
 
 class GetGroupListRsp(RootModel[list[GetGroupInfoRsp]]): ...
@@ -283,6 +307,7 @@ class GetGroupMemberInfoRsp(BaseModel):
 
 class GetGroupMemberListData(BaseModel):
     group_id: int
+    no_cache: bool = False
 
 
 class GetGroupMemberListRsp(RootModel[list[GetGroupMemberInfoRsp]]): ...
@@ -312,13 +337,15 @@ class GetVersionInfoRsp(BaseModel):
 
 class GetCookieData(BaseModel):
     domain: str
+    no_cache: bool = False
 
 
 class GetCookieRsp(BaseModel):
     cookies: str
 
 
-class GetCSRFTokenData(BaseModel): ...
+class GetCSRFTokenData(BaseModel):
+    no_cache: bool = False
 
 
 class GetCSRFTokenRsp(BaseModel):
@@ -350,6 +377,7 @@ class GetGroupFileUrlData(BaseModel):
     group_id: int
     file_id: str
     busid: int = 0
+    no_cache: bool = False
 
 
 class GetGroupFileUrlRsp(BaseModel):
@@ -360,6 +388,7 @@ class GetPrivateFileUrlData(BaseModel):
     user_id: int
     file_id: str
     file_hash: str
+    no_cache: bool = False
 
 
 class GetPrivateFileUrlRsp(BaseModel):
