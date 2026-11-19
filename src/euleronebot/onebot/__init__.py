@@ -58,6 +58,9 @@ def _summarize_validation_error(e: ValidationError, raw: dict, known_actions: se
     return head or "参数无效"
 
 
+# 日志里每个 API 响应最多显示多少字符（成员列表之类的响应动辄几万字符）
+API_RESULT_LOG_LIMIT = 400
+
 API_CALL_TYPES = (
     SendPrivateMessage,
     SendGroupMessage,
@@ -76,6 +79,10 @@ API_CALL_TYPES = (
     SetGroupCard,
     SetGroupName,
     SetGroupLeave,
+    SetGroupSign,
+    SendGroupSign,
+    SetEssenceMsg,
+    DeleteEssenceMsg,
     SetGroupSpecialTitle,
     SetFriendAddRequest,
     SetGroupAddRequest,
@@ -161,7 +168,10 @@ class Adapter:
         await self.connector.trigger(event.model_dump_json())
 
     async def report(self, rsp: BaseAPIResponse) -> None:
-        logger.info(f"API Result: {rsp}")
+        text = str(rsp)
+        if len(text) > API_RESULT_LOG_LIMIT:
+            text = f"{text[:API_RESULT_LOG_LIMIT]} ...(共 {len(text)} 字符，已截断)"
+        logger.info(f"API Result: {text}")
         if rsp.echo and rsp.echo in self._pending_responses:
             self._pending_responses.pop(rsp.echo).set_result(rsp)
         await self.connector.report(rsp.model_dump_json())

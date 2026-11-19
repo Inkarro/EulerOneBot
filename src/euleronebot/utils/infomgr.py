@@ -196,9 +196,11 @@ class UIDPool:
 
         return count
 
-    async def load_all(self, client: Client) -> None:
+    async def load_all(self, client: Client, groups_loader=None) -> None:
+        """groups_loader：返回新增映射数的协程函数。给了就用它代替 load_all_grps
+        （后者对每个群不限速地翻页拉成员，启动时会把服务器打到限流）"""
         t1 = asyncio.create_task(self.load_all_users(client))
-        t2 = asyncio.create_task(self.load_all_grps(client))
+        t2 = asyncio.create_task(groups_loader() if groups_loader else self.load_all_grps(client))
         results = await asyncio.gather(t1, t2, return_exceptions=True)
         c1 = results[0] if not isinstance(results[0], BaseException) else 0
         c2 = results[1] if not isinstance(results[1], BaseException) else 0

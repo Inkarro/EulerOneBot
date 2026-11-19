@@ -138,8 +138,36 @@ def patch_sign_blacklist() -> None:
     _sign_blacklist_patched = True
 
 
+_member_defaults_patched = False
+
+
+def patch_member_body_defaults() -> None:
+    """
+    群成员列表里，某些成员的 joined_time / last_seen 为 0，protobuf 会省略值为 0 的字段，
+    而 hiro-qq 把它们声明成了必填，解码时抛 AttributeError('Missing required parameters: joined_time(100)')，
+    导致整个群的成员列表加载失败。给它们补上默认值 0 即可。
+    """
+    global _member_defaults_patched
+    if _member_defaults_patched:
+        return
+
+    from lagrange.pb.service.group import GetGrpMemberInfoRspBody
+    from lagrange.utils.binary.protobuf.models import MISSING
+
+    patched = []
+    for name in ("joined_time", "last_seen"):
+        field = GetGrpMemberInfoRspBody.__proto_fields__[name]
+        if field.default is MISSING and field.default_factory is MISSING:
+            field.default = 0
+            patched.append(name)
+    if patched:
+        logger.info(f"已给群成员记录的 {patched} 补上默认值 0")
+    _member_defaults_patched = True
+
+
 def apply_patches() -> None:
     patches: list[Callable[[], None]] = [
+        patch_member_body_defaults,
         patch_sign_blacklist,
         patch_push_hex_dump,
         patch_dump_keyword,
