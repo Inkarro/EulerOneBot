@@ -238,7 +238,7 @@ wheels = [
 
 [[package]]
 name = "euler-onebot"
-version = "0.1.3"
+version = "0.1.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -315,7 +315,7 @@ wheels = [
 [[package]]
 name = "hiro-qq"
 version = "0.2.0"
-source = { git = "https://github.com/Inkarro/hiro-qq.git#c12fcfe28caf61db101151a4762b481caf529e3c" }
+source = { git = "https://github.com/Inkarro/hiro-qq.git#d24ca3608cdb2bf7527f18d1177ff3d59b737a53" }
 dependencies = [
     { name = "cryptography" },
     { name = "qrcode" },
